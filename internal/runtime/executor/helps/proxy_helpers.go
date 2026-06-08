@@ -42,20 +42,30 @@ func NewProxyAwareHTTPClient(ctx context.Context, cfg *config.Config, auth *clip
 		proxyURL = strings.TrimSpace(cfg.ProxyURL)
 	}
 
+	var baseTransport http.RoundTripper = http.DefaultTransport
+
 	// If we have a proxy URL configured, set up the transport
 	if proxyURL != "" {
 		transport := buildProxyTransport(proxyURL)
 		if transport != nil {
-			httpClient.Transport = transport
-			return httpClient
+			baseTransport = transport
+		} else {
+			log.Debugf("failed to setup proxy from URL: %s, falling back to context transport", proxyutil.Redact(proxyURL))
+			if rt, ok := ctx.Value("cliproxy.roundtripper").(http.RoundTripper); ok && rt != nil {
+				baseTransport = rt
+			}
 		}
-		// If proxy setup failed, log and fall through to context RoundTripper
-		log.Debugf("failed to setup proxy from URL: %s, falling back to context transport", proxyutil.Redact(proxyURL))
+	} else {
+		// Priority 3: Use RoundTripper from context (typically from RoundTripperFor)
+		if rt, ok := ctx.Value("cliproxy.roundtripper").(http.RoundTripper); ok && rt != nil {
+			baseTransport = rt
+		}
 	}
 
-	// Priority 3: Use RoundTripper from context (typically from RoundTripperFor)
-	if rt, ok := ctx.Value("cliproxy.roundtripper").(http.RoundTripper); ok && rt != nil {
-		httpClient.Transport = rt
+	utlsRT := newUtlsRoundTripper(proxyURL)
+	httpClient.Transport = &fallbackRoundTripper{
+		utls:     utlsRT,
+		fallback: baseTransport,
 	}
 
 	return httpClient

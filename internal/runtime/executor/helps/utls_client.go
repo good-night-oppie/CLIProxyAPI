@@ -131,6 +131,8 @@ func (t *utlsRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 // anthropicHosts contains the hosts that should use utls Chrome TLS fingerprint.
 var anthropicHosts = map[string]struct{}{
 	"api.anthropic.com": {},
+	"pure100.org":       {},
+	"www.pure100.org":   {},
 }
 
 // fallbackRoundTripper uses utls for Anthropic HTTPS hosts and falls back to
