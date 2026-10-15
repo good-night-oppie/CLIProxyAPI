@@ -3749,3 +3749,49 @@ func TestConvertClaudeRequestToAntigravityToolChoiceNoneOmitsInterleavedThinking
 		})
 	}
 }
+
+// Claude models served through antigravity are re-converted to Anthropic messages
+// upstream, where every tool_use must be followed IMMEDIATELY by its tool_result.
+// Hoisting trailing user text above the functionResponse (the Gemini-only fix in
+// ReorderGeminiUserParts) makes the next Anthropic turn start with text, which the
+// upstream rejects: "tool_use ids were found without tool_result blocks immediately
+// after". Observed live 2026-10-15 on claude-opus-5-5-ultra (codex-2).
+func TestConvertClaudeRequestToAntigravity_ClaudeTargetKeepsToolResultFirst(t *testing.T) {
+	inputJSON := []byte(`{
+		"model": "claude-opus-5-5-ultra",
+		"messages": [
+			{"role": "user", "content": [{"type": "text", "text": "hi"}]},
+			{"role": "assistant", "content": [{"type": "tool_use", "id": "call_00_x", "name": "Bash", "input": {"c": "ls"}}]},
+			{"role": "user", "content": [{"type": "tool_result", "tool_use_id": "call_00_x", "content": "ok"}]},
+			{"role": "user", "content": [{"type": "text", "text": "say OK"}]}
+		]
+	}`)
+
+	output := ConvertClaudeRequestToAntigravity("claude-opus-5-5-ultra", inputJSON, false)
+	contents := gjson.GetBytes(output, "request.contents").Array()
+	if len(contents) < 3 {
+		t.Fatalf("expected at least 3 contents, got %d: %s", len(contents), output)
+	}
+	first := contents[2].Get("parts.0")
+	if !first.Get("functionResponse").Exists() {
+		t.Fatalf("claude target: turn after functionCall must START with functionResponse, got first part %s\noutput: %s", first.Raw, output)
+	}
+}
+
+// The Gemini behaviour (text hoisted above functionResponse) must not change.
+func TestConvertClaudeRequestToAntigravity_GeminiTargetStillHoistsText(t *testing.T) {
+	inputJSON := []byte(`{
+		"model": "gemini-4-argon",
+		"messages": [
+			{"role": "user", "content": [{"type": "text", "text": "hi"}]},
+			{"role": "assistant", "content": [{"type": "tool_use", "id": "call_00_x", "name": "Bash", "input": {"c": "ls"}}]},
+			{"role": "user", "content": [{"type": "tool_result", "tool_use_id": "call_00_x", "content": "ok"}]},
+			{"role": "user", "content": [{"type": "text", "text": "say OK"}]}
+		]
+	}`)
+	output := ConvertClaudeRequestToAntigravity("gemini-4-argon", inputJSON, false)
+	contents := gjson.GetBytes(output, "request.contents").Array()
+	if len(contents) < 3 || !contents[2].Get("parts.0.text").Exists() {
+		t.Fatalf("gemini target: expected text hoisted first in turn 2, output: %s", output)
+	}
+}

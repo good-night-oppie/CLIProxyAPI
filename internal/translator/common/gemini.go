@@ -17,6 +17,18 @@ func IsGeminiThoughtPart(part gjson.Result) bool {
 // Consecutive model turns are strictly kept unmerged to avoid shifting part
 // indices and breaking cryptographic thought signatures and reasoning replay.
 func MergeAdjacentGeminiContents(contents [][]byte) [][]byte {
+	return mergeAdjacentGeminiContents(contents, true)
+}
+
+// MergeAdjacentGeminiContentsKeepToolResultFirst merges like MergeAdjacentGeminiContents
+// but never hoists text above a functionResponse. Claude models reached through
+// Gemini-shaped upstreams are converted back to Anthropic messages, where a
+// tool_result must be the first block after its tool_use.
+func MergeAdjacentGeminiContentsKeepToolResultFirst(contents [][]byte) [][]byte {
+	return mergeAdjacentGeminiContents(contents, false)
+}
+
+func mergeAdjacentGeminiContents(contents [][]byte, hoistText bool) [][]byte {
 	if len(contents) <= 1 {
 		return contents
 	}
@@ -43,7 +55,9 @@ func MergeAdjacentGeminiContents(contents [][]byte) [][]byte {
 				for _, p := range partsResult.Array() {
 					combinedParts = append(combinedParts, []byte(p.Raw))
 				}
-				combinedParts = ReorderGeminiUserParts(combinedParts)
+				if hoistText {
+					combinedParts = ReorderGeminiUserParts(combinedParts)
+				}
 				updated, err := sjson.SetRawBytes(lastJSON, "parts", JoinRawArray(combinedParts))
 				if err == nil {
 					merged[lastIndex] = updated
