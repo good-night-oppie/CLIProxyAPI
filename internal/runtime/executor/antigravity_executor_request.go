@@ -71,6 +71,7 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 	var (
 		bodyReader io.Reader
 		payloadLog []byte
+		finalBody  []byte
 	)
 	if antigravityRequestNeedsSchemaSanitization(payload) {
 		payloadStr := sanitizeAntigravityRequestSchemas(string(payload), useAntigravitySchema)
@@ -84,6 +85,7 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 
 		payloadStrBytes := applyAntigravityNativeSignatureReplayIfNeeded(modelName, []byte(payloadStr))
 		bodyReader = bytes.NewReader(payloadStrBytes)
+		finalBody = payloadStrBytes
 		if e.cfg != nil && e.cfg.RequestLog {
 			payloadLog = append([]byte(nil), payloadStrBytes...)
 		}
@@ -96,6 +98,7 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 
 		payload = applyAntigravityNativeSignatureReplayIfNeeded(modelName, payload)
 		bodyReader = bytes.NewReader(payload)
+		finalBody = payload
 		if e.cfg != nil && e.cfg.RequestLog {
 			payloadLog = append([]byte(nil), payload...)
 		}
@@ -114,6 +117,8 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 	// 	}
 	// }
 
+	// Off unless CLIPROXY_LOG_REQUEST_SHAPE=1: counts on the exact bytes sent.
+	logAntigravityRequestShape(modelName, stream, finalBody)
 	httpReq, errReq := http.NewRequestWithContext(ctx, http.MethodPost, requestURL.String(), bodyReader)
 	if errReq != nil {
 		return nil, errReq
