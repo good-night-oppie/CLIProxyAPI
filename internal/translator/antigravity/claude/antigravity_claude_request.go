@@ -803,6 +803,10 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 				continue
 			}
 			inputSchemaResult := toolResult.Get("input_schema")
+			if !inputSchemaResult.Exists() || !inputSchemaResult.IsObject() {
+				// Not declarable upstream: say so instead of dropping it silently.
+				log.Warnf("antigravity claude translator: tool %q dropped (no object input_schema; type=%q)", toolResult.Get("name").String(), toolResult.Get("type").String())
+			}
 			if inputSchemaResult.Exists() && inputSchemaResult.IsObject() {
 				// Sanitize the input schema for Antigravity API compatibility
 				inputSchema := util.CleanJSONSchemaForAntigravity(inputSchemaResult.Raw)
@@ -826,6 +830,9 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 		if len(functionDeclarations) > 0 {
 			deduplicated := util.DeduplicateFunctionDeclarations(translatorcommon.JoinRawArray(functionDeclarations))
 			toolDeclCount = len(gjson.ParseBytes(deduplicated).Array())
+			if toolDeclCount < len(functionDeclarations) {
+				log.Warnf("antigravity claude translator: %d of %d tool declarations dropped as duplicates", len(functionDeclarations)-toolDeclCount, len(functionDeclarations))
+			}
 			if toolDeclCount > 0 {
 				functionToolNode := []byte(`{"functionDeclarations":[]}`)
 				functionToolNode, _ = sjson.SetRawBytes(functionToolNode, "functionDeclarations", deduplicated)
