@@ -43,7 +43,7 @@ import (
 )
 
 var (
-	Version           = "dev"
+	Version           = buildinfo.ReleaseVersion
 	Commit            = "none"
 	BuildDate         = "unknown"
 	DefaultConfigPath = ""
@@ -82,7 +82,7 @@ func main() {
 		discoverFlags.Func("exclude", "Comma-separated interface names to skip", appendCSV(&exclude))
 		_ = discoverFlags.Parse(os.Args[2:])
 		if !*jsonOut {
-			fmt.Fprintf(os.Stderr, "CLIProxyAPI Version: %s, Commit: %s, BuiltAt: %s\n", buildinfo.Version, buildinfo.Commit, buildinfo.BuildDate)
+			fmt.Fprintf(os.Stderr, "CLIProxyAPI Version: %s, Commit: %s, BuiltAt: %s\n%s\n", buildinfo.Version, buildinfo.Commit, buildinfo.BuildDate, buildinfo.BackportNote)
 		}
 		cfgInclude, cfgExclude := cmd.LoadDiscoveryScanFilters(*configPathFlag)
 		include, exclude = cmd.ResolveDiscoveryInterfaceFilters(include, exclude, cfgInclude, cfgExclude)
@@ -100,7 +100,7 @@ func main() {
 	isJSONDiscover := argvEnablesBoolFlag(os.Args[1:], "discover-json")
 	isDiscoverMode := isJSONDiscover || argvEnablesBoolFlag(os.Args[1:], "discover")
 	if !isJSONDiscover {
-		fmt.Printf("CLIProxyAPI Version: %s, Commit: %s, BuiltAt: %s\n", buildinfo.Version, buildinfo.Commit, buildinfo.BuildDate)
+		fmt.Printf("CLIProxyAPI Version: %s, Commit: %s, BuiltAt: %s\n%s\n", buildinfo.Version, buildinfo.Commit, buildinfo.BuildDate, buildinfo.BackportNote)
 	}
 
 	// Command-line flags to control the application's behavior.
@@ -632,6 +632,7 @@ func main() {
 	}
 
 	log.Infof("CLIProxyAPI Version: %s, Commit: %s, BuiltAt: %s", buildinfo.Version, buildinfo.Commit, buildinfo.BuildDate)
+	log.Info(buildinfo.BackportNote)
 
 	// Set the log level based on the configuration.
 	util.SetLogLevel(cfg)
