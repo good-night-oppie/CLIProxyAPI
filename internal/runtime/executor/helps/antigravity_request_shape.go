@@ -1,4 +1,4 @@
-package executor
+package helps
 
 import (
 	"os"
@@ -41,7 +41,7 @@ func measureAntigravityRequestShape(body []byte) antigravityRequestShape {
 	return s
 }
 
-func logAntigravityRequestShape(modelName string, stream bool, body []byte) {
+func LogAntigravityRequestShape(modelName string, stream bool, body []byte) {
 	if os.Getenv(antigravityRequestShapeEnv) != "1" {
 		return
 	}

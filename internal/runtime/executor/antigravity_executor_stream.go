@@ -124,7 +124,7 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 		}
 	}
 	requestPayload = ensureAntigravityGeminiBoundaryUserContent(baseModel, requestPayload)
-	if errTools := failClosedOnDroppedTools(from, baseModel, originalPayload, requestPayload); errTools != nil {
+	if errTools := helps.FailClosedOnDroppedTools(from, baseModel, originalPayload, requestPayload); errTools != nil {
 		err = errTools
 		return nil, errTools
 	}

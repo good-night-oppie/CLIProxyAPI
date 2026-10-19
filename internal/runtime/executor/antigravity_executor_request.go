@@ -118,7 +118,7 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 	// }
 
 	// Off unless CLIPROXY_LOG_REQUEST_SHAPE=1: counts on the exact bytes sent.
-	logAntigravityRequestShape(modelName, stream, finalBody)
+	helps.LogAntigravityRequestShape(modelName, stream, finalBody)
 	httpReq, errReq := http.NewRequestWithContext(ctx, http.MethodPost, requestURL.String(), bodyReader)
 	if errReq != nil {
 		return nil, errReq

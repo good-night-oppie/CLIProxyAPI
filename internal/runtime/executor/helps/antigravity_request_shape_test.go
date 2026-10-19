@@ -1,4 +1,4 @@
-package executor
+package helps
 
 import (
 	"bytes"
@@ -29,12 +29,12 @@ func TestLogAntigravityRequestShapeGate(t *testing.T) {
 	body := []byte(`{"request":{"contents":[{}],"tools":[{"functionDeclarations":[{},{}]}]}}`)
 
 	t.Setenv(antigravityRequestShapeEnv, "")
-	logAntigravityRequestShape("m", false, body)
+	LogAntigravityRequestShape("m", false, body)
 	if buf.Len() != 0 {
 		t.Fatalf("flag unset: expected no log, got %q", buf.String())
 	}
 	t.Setenv(antigravityRequestShapeEnv, "1")
-	logAntigravityRequestShape("m", true, body)
+	LogAntigravityRequestShape("m", true, body)
 	out := buf.String()
 	for _, w := range []string{"contents=1", "function_declarations=2", "total_declared_tools=2", "body_bytes="} {
 		if !bytes.Contains([]byte(out), []byte(w)) {

@@ -123,7 +123,7 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 		}
 	}
 	requestPayload = ensureAntigravityGeminiBoundaryUserContent(baseModel, requestPayload)
-	if errTools := failClosedOnDroppedTools(from, baseModel, originalPayload, requestPayload); errTools != nil {
+	if errTools := helps.FailClosedOnDroppedTools(from, baseModel, originalPayload, requestPayload); errTools != nil {
 		err = errTools
 		return resp, errTools
 	}
@@ -335,7 +335,7 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 		}
 	}
 	requestPayload = ensureAntigravityGeminiBoundaryUserContent(baseModel, requestPayload)
-	if errTools := failClosedOnDroppedTools(from, baseModel, originalPayload, requestPayload); errTools != nil {
+	if errTools := helps.FailClosedOnDroppedTools(from, baseModel, originalPayload, requestPayload); errTools != nil {
 		err = errTools
 		return resp, errTools
 	}

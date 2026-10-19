@@ -1,4 +1,4 @@
-package executor
+package helps
 
 import (
 	"fmt"
@@ -10,12 +10,12 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// failClosedOnDroppedTools runs on the final payload, just before buildRequest.
+// FailClosedOnDroppedTools runs on the final payload, just before buildRequest.
 // Fewer declarations than requested tools: log the missing names. None left
 // while the client sent tools: refuse instead of sending a zero-tool request
 // (the model would answer that no tools exist while the client believes it
 // sent all of them).
-func failClosedOnDroppedTools(from sdktranslator.Format, modelName string, claudeRequest, payload []byte) error {
+func FailClosedOnDroppedTools(from sdktranslator.Format, modelName string, claudeRequest, payload []byte) error {
 	if from != sdktranslator.FormatClaude {
 		return nil
 	}
@@ -29,7 +29,12 @@ func failClosedOnDroppedTools(from sdktranslator.Format, modelName string, claud
 	if len(c.Declared) > 0 {
 		return nil
 	}
-	return statusErr{code: http.StatusBadRequest, msg: fmt.Sprintf(
+	return droppedToolsError{message: fmt.Sprintf(
 		"antigravity: the request carried %d tools but none could be declared upstream (dropped: %s); refusing to send a request with no tools",
 		len(c.Requested), strings.Join(dropped, ", "))}
 }
+
+type droppedToolsError struct{ message string }
+
+func (e droppedToolsError) Error() string   { return e.message }
+func (e droppedToolsError) StatusCode() int { return http.StatusBadRequest }

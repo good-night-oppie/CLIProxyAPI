@@ -1,4 +1,4 @@
-package executor
+package helps
 
 import (
 	"bytes"
@@ -32,7 +32,7 @@ const schema = `{"type":"object","properties":{}}`
 func TestFailClosedAllToolsDeclared(t *testing.T) {
 	req := `{"messages":[{"role":"user","content":"hi"}],"tools":[{"name":"Read","input_schema":` + schema + `},{"name":"Bash","input_schema":` + schema + `}]}`
 	buf := captureLog(t)
-	if err := failClosedOnDroppedTools(sdktranslator.FormatClaude, toolModel, []byte(req), translateClaude(t, req)); err != nil {
+	if err := FailClosedOnDroppedTools(sdktranslator.FormatClaude, toolModel, []byte(req), translateClaude(t, req)); err != nil {
 		t.Fatalf("all tools declared: unexpected error %v", err)
 	}
 	if strings.Contains(buf.String(), "requested tools declared") {
@@ -43,7 +43,7 @@ func TestFailClosedAllToolsDeclared(t *testing.T) {
 func TestFailClosedSomeToolsDroppedLogsNames(t *testing.T) {
 	req := `{"messages":[{"role":"user","content":"hi"}],"tools":[{"name":"Read","input_schema":` + schema + `},{"name":"NoSchema"}]}`
 	buf := captureLog(t)
-	if err := failClosedOnDroppedTools(sdktranslator.FormatClaude, toolModel, []byte(req), translateClaude(t, req)); err != nil {
+	if err := FailClosedOnDroppedTools(sdktranslator.FormatClaude, toolModel, []byte(req), translateClaude(t, req)); err != nil {
 		t.Fatalf("one tool left: must still send, got %v", err)
 	}
 	out := buf.String()
@@ -57,12 +57,12 @@ func TestFailClosedSomeToolsDroppedLogsNames(t *testing.T) {
 func TestFailClosedAllToolsDroppedReturnsError(t *testing.T) {
 	req := `{"messages":[{"role":"user","content":"hi"}],"tools":[{"name":"A"},{"name":"B","input_schema":"not-an-object"}]}`
 	payload := translateClaude(t, req)
-	err := failClosedOnDroppedTools(sdktranslator.FormatClaude, toolModel, []byte(req), payload)
+	err := FailClosedOnDroppedTools(sdktranslator.FormatClaude, toolModel, []byte(req), payload)
 	if err == nil {
 		t.Fatalf("all tools dropped: expected an error, payload %s", payload)
 	}
-	se, ok := err.(statusErr)
-	if !ok || se.code != 400 || !strings.Contains(se.msg, "carried 2 tools but none") || !strings.Contains(se.msg, "A, B") {
+	se, ok := err.(droppedToolsError)
+	if !ok || se.StatusCode() != 400 || !strings.Contains(se.message, "carried 2 tools but none") || !strings.Contains(se.message, "A, B") {
 		t.Fatalf("unexpected error %#v", err)
 	}
 }
@@ -73,12 +73,12 @@ func TestFailClosedNoToolsRequested(t *testing.T) {
 		"tool_choice none": `{"messages":[{"role":"user","content":"hi"}],"tool_choice":{"type":"none"},"tools":[{"name":"A","input_schema":` + schema + `}]}`,
 		"web search only":  `{"messages":[{"role":"user","content":"hi"}],"tools":[{"type":"web_search_20250305","name":"web_search"}]}`,
 	} {
-		if err := failClosedOnDroppedTools(sdktranslator.FormatClaude, toolModel, []byte(req), translateClaude(t, req)); err != nil {
+		if err := FailClosedOnDroppedTools(sdktranslator.FormatClaude, toolModel, []byte(req), translateClaude(t, req)); err != nil {
 			t.Fatalf("%s: unexpected error %v", name, err)
 		}
 	}
 	// Other source formats are not checked here.
-	if err := failClosedOnDroppedTools(sdktranslator.FormatOpenAI, toolModel, []byte(`{"tools":[{"name":"A"}]}`), []byte(`{}`)); err != nil {
+	if err := FailClosedOnDroppedTools(sdktranslator.FormatOpenAI, toolModel, []byte(`{"tools":[{"name":"A"}]}`), []byte(`{}`)); err != nil {
 		t.Fatalf("non-claude format: unexpected error %v", err)
 	}
 }
