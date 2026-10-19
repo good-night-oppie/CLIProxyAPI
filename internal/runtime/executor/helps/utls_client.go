@@ -405,3 +405,18 @@ func NewUtlsHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyau
 	}
 	return client
 }
+
+// pure100FingerprintRoundTripper preserves the local reverse-proxy TLS fix
+// without changing the native Anthropic or other provider transports.
+type pure100FingerprintRoundTripper struct {
+	chrome   http.RoundTripper
+	fallback http.RoundTripper
+}
+
+func (f *pure100FingerprintRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	host := strings.ToLower(req.URL.Hostname())
+	if req.URL.Scheme == "https" && (host == "pure100.org" || host == "www.pure100.org") {
+		return f.chrome.RoundTrip(req)
+	}
+	return f.fallback.RoundTrip(req)
+}
