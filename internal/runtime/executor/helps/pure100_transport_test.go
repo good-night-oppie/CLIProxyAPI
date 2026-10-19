@@ -24,7 +24,7 @@ func TestPure100FingerprintTransportDoesNotChangeOtherProviders(t *testing.T) {
 	} {
 		t.Run(target.url, func(t *testing.T) {
 			chrome, standard := &pure100TestTransport{}, &pure100TestTransport{}
-			rt := &pure100FingerprintRoundTripper{chrome: chrome, fallback: standard}
+			rt := &fallbackRoundTripper{anthropic: standard, chrome: chrome, fallback: standard}
 			req, err := http.NewRequest(http.MethodPost, target.url, nil)
 			if err != nil {
 				t.Fatal(err)

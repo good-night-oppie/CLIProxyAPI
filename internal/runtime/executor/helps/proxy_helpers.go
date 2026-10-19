@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -27,6 +28,15 @@ import (
 // Returns:
 //   - *http.Client: An HTTP client with configured proxy or transport
 func NewProxyAwareHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth, timeout time.Duration) *http.Client {
+	// Preserve the local browser-fingerprint requirement only for the reverse proxy
+	// that needs it; shared native and Antigravity transports retain their pooling.
+	if auth != nil {
+		target, err := url.Parse(strings.TrimSpace(auth.Attributes["base_url"]))
+		if err == nil && target.Scheme == "https" && (strings.EqualFold(target.Hostname(), "pure100.org") || strings.EqualFold(target.Hostname(), "www.pure100.org")) {
+			return NewUtlsHTTPClient(ctx, cfg, auth, timeout)
+		}
+	}
+
 	httpClient := &http.Client{}
 	if timeout > 0 {
 		httpClient.Timeout = timeout
@@ -43,30 +53,20 @@ func NewProxyAwareHTTPClient(ctx context.Context, cfg *config.Config, auth *clip
 		proxyURL = strings.TrimSpace(cfg.ProxyURL)
 	}
 
-	var baseTransport http.RoundTripper = http.DefaultTransport
-
 	// If we have a proxy URL configured, set up the transport
 	if proxyURL != "" {
 		transport := buildProxyTransport(proxyURL)
 		if transport != nil {
-			baseTransport = transport
-		} else {
-			log.Debugf("failed to setup proxy from URL: %s, falling back to context transport", proxyutil.Redact(proxyURL))
-			if rt, ok := ctx.Value("cliproxy.roundtripper").(http.RoundTripper); ok && rt != nil {
-				baseTransport = rt
-			}
+			httpClient.Transport = transport
+			return httpClient
 		}
-	} else {
-		// Priority 3: Use RoundTripper from context (typically from RoundTripperFor)
-		if rt, ok := ctx.Value("cliproxy.roundtripper").(http.RoundTripper); ok && rt != nil {
-			baseTransport = rt
-		}
+		// If proxy setup failed, log and fall through to context RoundTripper
+		log.Debugf("failed to setup proxy from URL: %s, falling back to context transport", proxyutil.Redact(proxyURL))
 	}
 
-	utlsRT := newUtlsRoundTripper(proxyURL)
-	httpClient.Transport = &pure100FingerprintRoundTripper{
-		chrome:   utlsRT,
-		fallback: baseTransport,
+	// Priority 3: Use RoundTripper from context (typically from RoundTripperFor)
+	if rt, ok := ctx.Value("cliproxy.roundtripper").(http.RoundTripper); ok && rt != nil {
+		httpClient.Transport = rt
 	}
 
 	return httpClient
