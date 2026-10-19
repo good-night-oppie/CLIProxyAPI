@@ -1,0 +1,60 @@
+host: 127.0.0.1
+port: 8318
+auth-dir: ~/.cli-proxy-api
+api-keys:
+- SET_LOCALLY
+debug: true
+ws-auth: true
+claude-header-defaults:
+  user-agent: claude-cli/2.1.280 (external, cli)
+oauth-model-alias:
+  claude:
+  - name: claude-opus-5-5
+    alias: claude-opus-5-5
+  - name: claude-opus-4-7
+    alias: claude-opus-4-7
+  - name: claude-opus-4-7
+    alias: op4.7
+  - name: claude-opus-4-6
+    alias: op4.6
+  - name: claude-sonnet-4-6-thinking[1m]
+    alias: claude-sonnet-4-6
+  - name: claude-haiku-4-5-20251001
+    alias: claude-haiku-4-5-20251001
+  antigravity:
+  - name: gemini-3.1-pro-low
+    alias: gemini-3.1
+    force-mapping: true
+  - name: gemini-3-flash
+    alias: gemini-3.5-flash
+    force-mapping: true
+  - name: gemini-3.1-pro-low
+    alias: gemini-3.1-pro-preview
+    force-mapping: true
+  - name: gemini-3.7-flash-high
+    alias: gemini-3.7-flash
+    force-mapping: true
+    fork: true
+  codex:
+  - name: gpt-6-astra
+    alias: gpt-6-astra
+  - name: gpt-6-sol
+    alias: gpt-6-sol
+  - name: gpt-6-luna
+    alias: gpt-6-luna
+  - name: gpt-5.6-terra
+    alias: teamclaude-terra-high
+    fork: true
+  - name: gpt-5.5
+    alias: gpt-5
+    fork: true
+  - name: gpt-5.4
+    alias: gpt-4o
+    fork: true
+payload:
+  override:
+  - models:
+    - name: teamclaude-terra-high
+      protocol: codex
+    params:
+      reasoning.effort: high

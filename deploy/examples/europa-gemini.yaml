@@ -1,0 +1,48 @@
+host: 127.0.0.1
+port: 8319
+debug: false
+logging-to-file: true
+auth-dir: ~/.cli-proxy-api
+remote-management:
+  allow-remote: false
+  disable-control-panel: true
+api-keys:
+- SET_LOCALLY
+request-retry: 3
+max-retry-credentials: 3
+oauth-model-alias:
+  antigravity:
+  - name: claude-opus-5-5-high
+    alias: claude-opus-5-5-ultra
+    force-mapping: true
+    fork: true
+  - name: claude-opus-5-5-high
+    alias: claude-opus-5-5
+    force-mapping: true
+    fork: true
+  - name: claude-sonnet-5-5-high
+    alias: claude-sonnet-5-5-ultra
+    force-mapping: true
+    fork: true
+  - name: claude-sonnet-5-5-high
+    alias: claude-sonnet-5-5
+    force-mapping: true
+    fork: true
+  - name: gemini-4-argon-high
+    alias: gemini-4-argon
+    force-mapping: true
+    fork: true
+  - name: gemini-3.8-flash-high
+    alias: gemini-3.8-flash
+    force-mapping: true
+    fork: true
+  - name: gemini-3.1-pro-low
+    alias: gemini-3.1-pro-high
+  - name: gemini-3.1-pro-low
+    alias: gemini-3.1-pro-xhigh
+  - name: gemini-3.1-pro-low
+    alias: gemini-3.1-pro-max
+  - name: gemini-3.1-pro-low
+    alias: gemini-3.1-pro-preview
+  - name: gemini-pro-agent
+    alias: gemini-pro-deep
