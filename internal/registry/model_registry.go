@@ -40,6 +40,8 @@ type ModelInfo struct {
 	MetadataModelID string `json:"-"`
 	// ExplicitThinking indicates thinking/reasoning configuration was explicitly configured for this model.
 	ExplicitThinking bool `json:"-"`
+	// SupportsFast reports an advertised fast service tier.
+	SupportsFast bool `json:"-"`
 	// ExplicitInputModalities indicates input modalities were explicitly configured for this model.
 	ExplicitInputModalities bool `json:"-"`
 	// Object type for the model (typically "model")
@@ -73,6 +75,8 @@ type ModelInfo struct {
 	MaxCompletionTokens int `json:"max_completion_tokens,omitempty"`
 	// SupportedParameters lists supported parameters
 	SupportedParameters []string `json:"supported_parameters,omitempty"`
+	// SupportedEndpoints lists supported protocol endpoints.
+	SupportedEndpoints []string `json:"supported_endpoints,omitempty"`
 	// SupportedInputModalities lists supported input modalities (e.g., TEXT, IMAGE, VIDEO, AUDIO)
 	SupportedInputModalities []string `json:"supportedInputModalities,omitempty"`
 	// SupportedOutputModalities lists supported output modalities (e.g., TEXT, IMAGE)
@@ -742,6 +746,9 @@ func cloneModelInfo(model *ModelInfo) *ModelInfo {
 		return nil
 	}
 	copyModel := *model
+	if model.SupportedEndpoints != nil {
+		copyModel.SupportedEndpoints = append([]string(nil), model.SupportedEndpoints...)
+	}
 	if model.NativeCapabilities != nil {
 		copyCapabilities := *model.NativeCapabilities
 		if model.NativeCapabilities.WebSearch != nil {

@@ -248,6 +248,8 @@ func TestAntigravityAsyncProbe_DiscardsStaleProbeWhenAuthReRegistered(t *testing
 // TestAntigravityAsyncProbe_PreservesPluginModels verifies that when an auth has plugin-provided
 // models in addition to native models, the async probe update preserves all plugin models.
 func TestAntigravityAsyncProbe_PreservesPluginModels(t *testing.T) {
+	resetAntigravityCapabilityCache()
+	t.Cleanup(resetAntigravityCapabilityCache)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"webSearchModelIds":["gemini-3.1-flash-lite"]}`))
@@ -307,6 +309,8 @@ func TestAntigravityAsyncProbe_PreservesPluginModels(t *testing.T) {
 // models have OAuth aliases and prefixes applied, the async capability probe correctly maps
 // them back to their upstream model identifiers and applies the probed capabilities.
 func TestAntigravityAsyncProbe_AppliesCapabilitiesToAliasedAndPrefixedModels(t *testing.T) {
+	resetAntigravityCapabilityCache()
+	t.Cleanup(resetAntigravityCapabilityCache)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"webSearchModelIds":["gemini-3.1-flash-lite", "gemini-3.1-pro"]}`))
@@ -454,6 +458,10 @@ func TestAntigravityAsyncProbe_UnregisteredClientNotResurrected(t *testing.T) {
 // TestAntigravityAsyncProbe_NormalRequestsDoNotDiscardProbe verifies that request completions
 // (which increment Auth.Generation via MarkResult) do not cause in-flight capability probe results to be discarded.
 func TestAntigravityAsyncProbe_NormalRequestsDoNotDiscardProbe(t *testing.T) {
+	// A reused httptest port must not inherit a previous test's cached probe.
+	// This test needs an actual in-flight request to exercise Generation changes.
+	resetAntigravityCapabilityCache()
+	t.Cleanup(resetAntigravityCapabilityCache)
 	probeStarted := make(chan struct{})
 	releaseProbe := make(chan struct{})
 
