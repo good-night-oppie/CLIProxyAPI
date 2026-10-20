@@ -9,9 +9,13 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/modelconfig"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 )
+
+var fetchCursorModelsForRegistration = executor.FetchCursorModels
 
 // registerModelsForAuth (re)binds provider models in the global registry using the core auth ID as client identifier.
 func (s *Service) registerModelsForAuth(ctx context.Context, a *coreauth.Auth) {
@@ -35,6 +39,7 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 			}
 		}
 		GlobalModelRegistry().UnregisterClient(a.ID)
+		helps.DeleteCursorRoutingModels(a.ID)
 		return
 	}
 	if s != nil && s.coreManager != nil {
@@ -71,6 +76,7 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 		return
 	}
 	var models []*ModelInfo
+	var cursorRoutingModels []*ModelInfo
 	switch provider {
 	case constant.Gemini:
 		models = registry.GetGeminiModels()
@@ -150,6 +156,10 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 			models = registry.GetCodexProModels()
 		}
 		models = applyExcludedModels(models, excluded)
+	case "cursor":
+		models = applyExcludedModels(fetchCursorModelsForRegistration(ctx, a, s.cfg), excluded)
+		cursorRoutingModels = models
+		models = applyExcludedModels(helps.AddCursorModelFamilies(models), excluded)
 	case "kimi":
 		models = registry.GetKimiModels()
 		models = applyExcludedModels(models, excluded)
@@ -294,6 +304,12 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 		key = strings.ToLower(strings.TrimSpace(a.Provider))
 	}
 	models = s.appendPluginModels(key, models)
+	if ctx.Err() != nil {
+		return
+	}
+	if provider == "cursor" {
+		helps.StoreCursorRoutingModels(a.ID, cursorRoutingModels)
+	}
 	if len(models) > 0 {
 		s.registerResolvedModelsForAuth(a, key, applyModelPrefixes(models, a.Prefix, s.cfg != nil && s.cfg.ForceModelPrefix))
 		if strings.EqualFold(strings.TrimSpace(a.Provider), "antigravity") {
@@ -342,6 +358,7 @@ func (s *Service) refreshModelRegistrationForAuthWithContext(ctx context.Context
 	latest, ok := s.latestAuthForModelRegistration(current.ID)
 	if !ok || latest.Disabled {
 		GlobalModelRegistry().UnregisterClient(current.ID)
+		helps.DeleteCursorRoutingModels(current.ID)
 		s.coreManager.RefreshSchedulerEntry(current.ID)
 		return false
 	}
