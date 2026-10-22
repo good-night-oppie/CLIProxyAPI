@@ -24,7 +24,7 @@ func (u CursorUsage) Observe(now time.Time) (Snapshot, error) {
 		{Pool: "api", Period: "monthly", UsedPercent: *u.PlanUsage.APIPercentUsed, ResetAt: reset},
 		{Pool: "total", Period: "monthly", UsedPercent: *u.PlanUsage.TotalPercentUsed, ResetAt: reset},
 	}
-	s.IncludedRemaining = u.PlanUsage.Remaining
+	s.IncludedRemaining = u.includedRemaining()
 	s.AutoBucketModels = append([]string{}, u.AutoBucketModels...)
 	return s, nil
 }

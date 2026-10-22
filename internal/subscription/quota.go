@@ -109,15 +109,31 @@ type CursorUsage struct {
 	} `json:"planUsage"`
 }
 
+// includedRemaining returns the legacy numeric planUsage.remaining when the
+// provider still sends it. Cursor's agent-era dashboard dropped that field,
+// so fall back to deriving it from the percentage meter (100 - totalPercentUsed).
+// Neither meter present stays fail-closed (nil).
+func (u CursorUsage) includedRemaining() *float64 {
+	if u.PlanUsage.Remaining != nil {
+		return u.PlanUsage.Remaining
+	}
+	if total := u.PlanUsage.TotalPercentUsed; percentage(total) {
+		derived := 100 - *total
+		return &derived
+	}
+	return nil
+}
+
 // Admit requires a current billing period and explicit accounting for the
 // selected model pool. On-demand remaining balance never grants admission.
 func (u CursorUsage) Admit(model string, now time.Time) (Snapshot, error) {
 	snapshot := Snapshot{Provider: "cursor", ObservedAt: now}
 	start, errStart := strconv.ParseInt(u.BillingCycleStart, 10, 64)
 	end, errEnd := strconv.ParseInt(u.BillingCycleEnd, 10, 64)
+	remaining := u.includedRemaining()
 	if !u.Enabled || model == "" || errStart != nil || errEnd != nil ||
 		now.UnixMilli() < start || now.UnixMilli() >= end || start >= end ||
-		u.AutoBucketModels == nil || !percentage(u.PlanUsage.Remaining) ||
+		u.AutoBucketModels == nil || !percentage(remaining) ||
 		!percentage(u.PlanUsage.Limit) || *u.PlanUsage.Limit <= 0 ||
 		!percentage(u.PlanUsage.TotalPercentUsed) {
 		return snapshot, unknown()
@@ -137,7 +153,7 @@ func (u CursorUsage) Admit(model string, now time.Time) (Snapshot, error) {
 		{Pool: pool, Period: "monthly", UsedPercent: *used, ResetAt: &reset},
 		{Pool: "total", Period: "monthly", UsedPercent: *u.PlanUsage.TotalPercentUsed, ResetAt: &reset},
 	}
-	if *used >= 100 || *u.PlanUsage.TotalPercentUsed >= 100 || *u.PlanUsage.Remaining <= 0 {
+	if *used >= 100 || *u.PlanUsage.TotalPercentUsed >= 100 || *remaining <= 0 {
 		return snapshot, exhausted()
 	}
 	return snapshot, nil

@@ -105,3 +105,37 @@ func TestCursorObservationIncludesBothPoolsEvenWhenOneIsExhausted(t *testing.T) 
 		t.Fatal("incomplete pool must not be exposed as known")
 	}
 }
+
+// Cursor's agent-era dashboard dropped the numeric planUsage.remaining; the
+// percentage meter remains and must derive the included-remaining gate.
+func TestCursorAgentEraSchemaDerivesRemaining(t *testing.T) {
+	var u CursorUsage
+	err := json.Unmarshal([]byte(`{"enabled":true,"billingCycleStart":"1000","billingCycleEnd":"100000","autoBucketModels":["default","grok-4.7"],"planUsage":{"totalSpend":2897,"includedSpend":2000,"bonusSpend":897,"limit":2000,"remainingBonus":false,"autoPercentUsed":6.4,"apiPercentUsed":0,"totalPercentUsed":6}}`), &u)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := u.Admit("grok-4.7", time.UnixMilli(5000))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Windows[0].Pool != "auto" {
+		t.Fatalf("pool = %s, want auto", s.Windows[0].Pool)
+	}
+	s, err = u.Observe(time.UnixMilli(5000))
+	if err != nil || len(s.Windows) != 3 || s.IncludedRemaining == nil {
+		t.Fatalf("snapshot=%+v err=%v", s, err)
+	}
+	if *s.IncludedRemaining != 94 {
+		t.Fatalf("includedRemaining = %v, want derived 94", *s.IncludedRemaining)
+	}
+	u.PlanUsage.Remaining = new(float64)
+	*u.PlanUsage.Remaining = 1400
+	if r := u.includedRemaining(); r == nil || *r != 1400 {
+		t.Fatal("legacy numeric remaining must take precedence")
+	}
+	u.PlanUsage.Remaining = nil
+	u.PlanUsage.TotalPercentUsed = nil
+	if _, err = u.Admit("grok-4.7", time.UnixMilli(5000)); err == nil {
+		t.Fatal("response without either meter must not admit")
+	}
+}
