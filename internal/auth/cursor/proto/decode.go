@@ -61,11 +61,24 @@ type DecodedServerMessage struct {
 	McpArgs              map[string][]byte // arg name -> protobuf-encoded value
 	McpServerIdentifiers []string
 
-	// For rejection context
+	// For rejection context and native tool forwarding
 	Path             string
 	Command          string
 	WorkingDirectory string
 	Url              string
+	FileText         string
+	FileBytes        []byte
+	Pattern          string
+	Glob             string
+	OutputMode       string
+	GrepType         string
+	IgnoreGlobs      []string
+	ContextBefore    *int64
+	ContextAfter     *int64
+	ContextLines     *int64
+	HeadLimit        *int64
+	CaseInsensitive  *bool
+	Multiline        *bool
 
 	// For other exec - the raw field number for building a response
 	ExecFieldNumber int
@@ -377,15 +390,16 @@ func decodeExecServerMessage(data []byte, msg *DecodedServerMessage) {
 				msg.Path = decodeStringField(val, RA_Path)
 			case ESM_WriteArgs:
 				msg.Type = ServerMsgExecWriteArgs
-				msg.Path = decodeStringField(val, WA_Path)
+				decodeWriteArgs(val, msg)
 			case ESM_DeleteArgs:
 				msg.Type = ServerMsgExecDeleteArgs
 				msg.Path = decodeStringField(val, DA_Path)
 			case ESM_LsArgs:
 				msg.Type = ServerMsgExecLsArgs
-				msg.Path = decodeStringField(val, LA_Path)
+				decodeLsArgs(val, msg)
 			case ESM_GrepArgs:
 				msg.Type = ServerMsgExecGrepArgs
+				decodeGrepArgs(val, msg)
 			case ESM_FetchArgs:
 				msg.Type = ServerMsgExecFetchArgs
 				msg.Url = decodeStringField(val, FA_Url)
@@ -487,6 +501,132 @@ func decodeMapEntry(data []byte, m map[string][]byte) {
 	if key != "" {
 		m[key] = value
 	}
+}
+
+func decodeWriteArgs(data []byte, msg *DecodedServerMessage) {
+	for len(data) > 0 {
+		num, typ, n := protowire.ConsumeTag(data)
+		if n < 0 {
+			return
+		}
+		data = data[n:]
+		if typ != protowire.BytesType {
+			n = protowire.ConsumeFieldValue(num, typ, data)
+			if n < 0 {
+				return
+			}
+			data = data[n:]
+			continue
+		}
+		val, n := protowire.ConsumeBytes(data)
+		if n < 0 {
+			return
+		}
+		data = data[n:]
+		switch num {
+		case WA_Path:
+			msg.Path = string(val)
+		case WA_FileText:
+			msg.FileText = string(val)
+		case WA_FileBytes:
+			msg.FileBytes = append([]byte(nil), val...)
+		}
+	}
+}
+
+func decodeLsArgs(data []byte, msg *DecodedServerMessage) {
+	for len(data) > 0 {
+		num, typ, n := protowire.ConsumeTag(data)
+		if n < 0 {
+			return
+		}
+		data = data[n:]
+		if typ != protowire.BytesType {
+			n = protowire.ConsumeFieldValue(num, typ, data)
+			if n < 0 {
+				return
+			}
+			data = data[n:]
+			continue
+		}
+		val, n := protowire.ConsumeBytes(data)
+		if n < 0 {
+			return
+		}
+		data = data[n:]
+		switch num {
+		case LA_Path:
+			msg.Path = string(val)
+		case LA_Ignore:
+			msg.IgnoreGlobs = append(msg.IgnoreGlobs, string(val))
+		}
+	}
+}
+
+func decodeGrepArgs(data []byte, msg *DecodedServerMessage) {
+	for len(data) > 0 {
+		num, typ, n := protowire.ConsumeTag(data)
+		if n < 0 {
+			return
+		}
+		data = data[n:]
+		switch typ {
+		case protowire.BytesType:
+			val, n := protowire.ConsumeBytes(data)
+			if n < 0 {
+				return
+			}
+			data = data[n:]
+			switch num {
+			case GA_Pattern:
+				msg.Pattern = string(val)
+			case GA_Path:
+				msg.Path = string(val)
+			case GA_Glob:
+				msg.Glob = string(val)
+			case GA_OutputMode:
+				msg.OutputMode = string(val)
+			case GA_Type:
+				msg.GrepType = string(val)
+			}
+		case protowire.VarintType:
+			val, n := protowire.ConsumeVarint(data)
+			if n < 0 {
+				return
+			}
+			data = data[n:]
+			switch num {
+			case GA_ContextBefore:
+				msg.ContextBefore = protoInt(val)
+			case GA_ContextAfter:
+				msg.ContextAfter = protoInt(val)
+			case GA_Context:
+				msg.ContextLines = protoInt(val)
+			case GA_HeadLimit:
+				msg.HeadLimit = protoInt(val)
+			case GA_CaseInsensitive:
+				msg.CaseInsensitive = protoBool(val)
+			case GA_Multiline:
+				msg.Multiline = protoBool(val)
+			}
+		default:
+			n = protowire.ConsumeFieldValue(num, typ, data)
+			if n < 0 {
+				return
+			}
+			data = data[n:]
+		}
+	}
+}
+
+func protoInt(v uint64) *int64 {
+	n := int64(v)
+	return &n
+}
+
+func protoBool(v uint64) *bool {
+	b := v != 0
+	return &b
 }
 
 func decodeShellArgs(data []byte, msg *DecodedServerMessage) {

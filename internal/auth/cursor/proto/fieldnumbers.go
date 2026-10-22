@@ -307,7 +307,9 @@ const (
 
 // WriteArgs
 const (
-	WA_Path = 1 // string
+	WA_Path      = 1 // string
+	WA_FileText  = 2 // string
+	WA_FileBytes = 5 // bytes
 )
 
 // DeleteArgs
@@ -317,7 +319,23 @@ const (
 
 // LsArgs
 const (
-	LA_Path = 1 // string
+	LA_Path   = 1 // string
+	LA_Ignore = 2 // repeated string
+)
+
+// GrepArgs
+const (
+	GA_Pattern         = 1  // string
+	GA_Path            = 2  // string
+	GA_Glob            = 3  // string
+	GA_OutputMode      = 4  // string
+	GA_ContextBefore   = 5  // int32
+	GA_ContextAfter    = 6  // int32
+	GA_Context         = 7  // int32
+	GA_CaseInsensitive = 8  // bool
+	GA_Type            = 9  // string
+	GA_HeadLimit       = 10 // int32
+	GA_Multiline       = 11 // bool
 )
 
 // ShellArgs

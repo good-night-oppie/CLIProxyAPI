@@ -111,6 +111,10 @@ type pendingMcpExec struct {
 	ToolCallId string
 	ToolName   string
 	Args       string // JSON-encoded args
+	// SkipResume emits the tool call to the client and ends this stream.
+	// Native shell/read/grep cannot be answered on the parked H2 session;
+	// the next request rebuilds from the transcript.
+	SkipResume bool
 }
 
 // NewCursorExecutor constructs a new executor instance.
@@ -480,11 +484,11 @@ func (e *CursorExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	var toolCalls []pendingMcpExec
 	usage := &cursorTokenUsage{}
 	usage.setInputEstimate(len(payload))
-	var onMcpExec func(pendingMcpExec)
-	if openAICompatible {
-		onMcpExec = func(toolCall pendingMcpExec) {
-			toolCalls = append(toolCalls, toolCall)
-		}
+	// Claude non-stream requests must return the tool call in the JSON body.
+	// Leaving the callback nil swallows ExecMcpArgs, Cursor waits for a reply
+	// that never comes, and the HTTP headers never go out.
+	onMcpExec := func(toolCall pendingMcpExec) {
+		toolCalls = append(toolCalls, toolCall)
 	}
 	if streamErr := e.processFrames(sessionCtx, stream, params.BlobStore, params.McpTools,
 		func(text string, isThinking bool) {
@@ -910,7 +914,7 @@ func (e *CursorExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 					toolCallIndex, jsonString(exec.ToolCallId), jsonString(exec.ToolName), jsonString(exec.Args))
 				toolCallIndex++
 				sendChunkSwitchable(toolCallJSON, "")
-				if !openAICompatible {
+				if !openAICompatible && !exec.SkipResume {
 					outMu.Lock()
 					waitingForTool = true
 					outMu.Unlock()
@@ -918,9 +922,15 @@ func (e *CursorExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 				sendChunkSwitchable(`{}`, `"tool_calls"`)
 				sendDoneSwitchable()
 
-				if openAICompatible {
+				if openAICompatible || exec.SkipResume {
+					if exec.SkipResume {
+						e.mu.Lock()
+						delete(e.checkpoints, checkpointKey)
+						e.mu.Unlock()
+						log.Debugf("cursor: handed native tool %s to the client and dropped the checkpoint", exec.ToolName)
+					}
 					closeCurrentOutput()
-					log.Debugf("cursor: ended H2 stream after MCP tool call (tool=%s)", exec.ToolName)
+					log.Debugf("cursor: ended H2 stream after tool call (tool=%s)", exec.ToolName)
 					return
 				}
 
@@ -1492,7 +1502,7 @@ func processH2SessionFrames(
 							ExecMsgId:  msg.ExecMsgId,
 							ExecId:     msg.ExecId,
 							ToolCallId: toolCallId,
-							ToolName:   msg.McpToolName,
+							ToolName:   clientMcpToolName(msg.McpToolName, mcpTools),
 							Args:       decodedArgs,
 						}
 						onMcpExec(pending)
@@ -1580,26 +1590,65 @@ func processH2SessionFrames(
 					}
 
 				case cursorproto.ServerMsgExecReadArgs:
+					if emitNativeClientTool(onMcpExec, msg) {
+						return nil
+					}
 					if errReply := writeCursorReply(stream, cursorproto.EncodeExecReadRejected(msg.ExecMsgId, msg.ExecId, msg.Path, rejectReason)); errReply != nil {
 						return errReply
 					}
 				case cursorproto.ServerMsgExecWriteArgs:
+					if emitNativeClientTool(onMcpExec, msg) {
+						return nil
+					}
 					if errReply := writeCursorReply(stream, cursorproto.EncodeExecWriteRejected(msg.ExecMsgId, msg.ExecId, msg.Path, rejectReason)); errReply != nil {
 						return errReply
 					}
 				case cursorproto.ServerMsgExecDeleteArgs:
+					if emitNativeClientTool(onMcpExec, msg) {
+						return nil
+					}
 					if errReply := writeCursorReply(stream, cursorproto.EncodeExecDeleteRejected(msg.ExecMsgId, msg.ExecId, msg.Path, rejectReason)); errReply != nil {
 						return errReply
 					}
 				case cursorproto.ServerMsgExecLsArgs:
+					if emitNativeClientTool(onMcpExec, msg) {
+						return nil
+					}
 					if errReply := writeCursorReply(stream, cursorproto.EncodeExecLsRejected(msg.ExecMsgId, msg.ExecId, msg.Path, rejectReason)); errReply != nil {
 						return errReply
 					}
 				case cursorproto.ServerMsgExecGrepArgs:
+					if emitNativeClientTool(onMcpExec, msg) {
+						return nil
+					}
 					if errReply := writeCursorReply(stream, cursorproto.EncodeExecGrepError(msg.ExecMsgId, msg.ExecId, rejectReason)); errReply != nil {
 						return errReply
 					}
 				case cursorproto.ServerMsgExecShellArgs, cursorproto.ServerMsgExecShellStream:
+					if onMcpExec != nil && strings.TrimSpace(msg.Command) != "" {
+						command := msg.Command
+						if wd := strings.TrimSpace(msg.WorkingDirectory); wd != "" && !strings.HasPrefix(strings.TrimSpace(command), "cd ") {
+							command = "cd " + shellQuote(wd) + " && " + command
+						}
+						toolCallId := normalizeToolCallID(msg.ExecId)
+						if toolCallId == "" {
+							toolCallId = uuid.New().String()
+						}
+						args, _ := json.Marshal(map[string]string{
+							"command":     command,
+							"description": "Run shell command",
+						})
+						log.Debugf("cursor: forwarding shell to client tool Bash execId=%s", msg.ExecId)
+						onMcpExec(pendingMcpExec{
+							ExecMsgId:  msg.ExecMsgId,
+							ExecId:     msg.ExecId,
+							ToolCallId: toolCallId,
+							ToolName:   "Bash",
+							Args:       string(args),
+							SkipResume: true,
+						})
+						return nil
+					}
 					if errReply := writeCursorReply(stream, cursorproto.EncodeExecShellRejected(msg.ExecMsgId, msg.ExecId, msg.Command, msg.WorkingDirectory, rejectReason)); errReply != nil {
 						return errReply
 					}
@@ -1608,6 +1657,9 @@ func processH2SessionFrames(
 						return errReply
 					}
 				case cursorproto.ServerMsgExecFetchArgs:
+					if emitNativeClientTool(onMcpExec, msg) {
+						return nil
+					}
 					if errReply := writeCursorReply(stream, cursorproto.EncodeExecFetchError(msg.ExecMsgId, msg.ExecId, msg.Url, rejectReason)); errReply != nil {
 						return errReply
 					}
@@ -2020,6 +2072,143 @@ func sseChunk(id string, created int64, model string, delta string, finishReason
 func jsonString(s string) string {
 	b, _ := json.Marshal(s)
 	return string(b)
+}
+
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'"
+}
+
+// emitNativeClientTool hands a Cursor built-in file or search call to the
+// client and ends this stream. The parked H2 session never sees the result.
+func emitNativeClientTool(onMcpExec func(pendingMcpExec), msg *cursorproto.DecodedServerMessage) bool {
+	if onMcpExec == nil || msg == nil {
+		return false
+	}
+	name, args, ok := nativeClientTool(msg)
+	if !ok {
+		return false
+	}
+	toolCallId := normalizeToolCallID(msg.ExecId)
+	if toolCallId == "" {
+		toolCallId = uuid.New().String()
+	}
+	log.Debugf("cursor: forwarding native tool %s execId=%s", name, msg.ExecId)
+	onMcpExec(pendingMcpExec{
+		ExecMsgId:  msg.ExecMsgId,
+		ExecId:     msg.ExecId,
+		ToolCallId: toolCallId,
+		ToolName:   name,
+		Args:       args,
+		SkipResume: true,
+	})
+	return true
+}
+
+// nativeClientTool maps Cursor's built-in tools onto Claude Code tool names.
+func nativeClientTool(msg *cursorproto.DecodedServerMessage) (string, string, bool) {
+	if msg == nil {
+		return "", "", false
+	}
+	var name string
+	args := map[string]any{}
+	switch msg.Type {
+	case cursorproto.ServerMsgExecReadArgs:
+		if strings.TrimSpace(msg.Path) == "" {
+			return "", "", false
+		}
+		name = "Read"
+		args["file_path"] = msg.Path
+	case cursorproto.ServerMsgExecWriteArgs:
+		if strings.TrimSpace(msg.Path) == "" {
+			return "", "", false
+		}
+		content := msg.FileText
+		if content == "" && len(msg.FileBytes) > 0 {
+			content = string(msg.FileBytes)
+		}
+		name = "Write"
+		args["file_path"] = msg.Path
+		args["content"] = content
+	case cursorproto.ServerMsgExecGrepArgs:
+		if strings.TrimSpace(msg.Pattern) == "" {
+			return "", "", false
+		}
+		name = "Grep"
+		args["pattern"] = msg.Pattern
+		if msg.Path != "" {
+			args["path"] = msg.Path
+		}
+		if msg.Glob != "" {
+			args["glob"] = msg.Glob
+		}
+		if msg.OutputMode != "" {
+			args["output_mode"] = msg.OutputMode
+		}
+		if msg.ContextBefore != nil {
+			args["-B"] = *msg.ContextBefore
+		}
+		if msg.ContextAfter != nil {
+			args["-A"] = *msg.ContextAfter
+		}
+		if msg.ContextLines != nil {
+			args["-C"] = *msg.ContextLines
+		}
+		if msg.CaseInsensitive != nil {
+			args["-i"] = *msg.CaseInsensitive
+		}
+		if msg.GrepType != "" {
+			args["type"] = msg.GrepType
+		}
+		if msg.HeadLimit != nil {
+			args["head_limit"] = *msg.HeadLimit
+		}
+		if msg.Multiline != nil {
+			args["multiline"] = *msg.Multiline
+		}
+	case cursorproto.ServerMsgExecLsArgs:
+		name = "Glob"
+		args["pattern"] = "*"
+		if strings.TrimSpace(msg.Path) != "" {
+			args["path"] = msg.Path
+		}
+	case cursorproto.ServerMsgExecDeleteArgs:
+		if strings.TrimSpace(msg.Path) == "" {
+			return "", "", false
+		}
+		name = "Bash"
+		args["command"] = "rm -f -- " + shellQuote(msg.Path)
+		args["description"] = "Delete file"
+	case cursorproto.ServerMsgExecFetchArgs:
+		if strings.TrimSpace(msg.Url) == "" {
+			return "", "", false
+		}
+		name = "WebFetch"
+		args["url"] = msg.Url
+		args["prompt"] = "Return the document content."
+	default:
+		return "", "", false
+	}
+	raw, err := json.Marshal(args)
+	if err != nil {
+		return "", "", false
+	}
+	return name, string(raw), true
+}
+
+// clientMcpToolName drops Cursor's provider prefix ("proxy-Bash" -> "Bash")
+// when the bare name is one of the tools the client actually registered.
+func clientMcpToolName(name string, tools []cursorproto.McpToolDef) string {
+	const prefix = "proxy-"
+	if !strings.HasPrefix(name, prefix) {
+		return name
+	}
+	bare := strings.TrimPrefix(name, prefix)
+	for _, tool := range tools {
+		if tool.Name == bare {
+			return bare
+		}
+	}
+	return name
 }
 
 func normalizeToolCallID(id string) string {
