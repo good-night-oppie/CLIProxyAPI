@@ -112,8 +112,9 @@ type pendingMcpExec struct {
 	ToolName   string
 	Args       string // JSON-encoded args
 	// SkipResume emits the tool call to the client and ends this stream.
-	// Native shell/read/grep cannot be answered on the parked H2 session;
-	// the next request rebuilds from the transcript.
+	// Used for OpenAI-compat clients that cannot resume a parked H2 session.
+	// Claude Code keeps SkipResume false so native Read/Grep/Bash results are
+	// injected on the same Cursor Connect instead of cold-starting a retry loop.
 	SkipResume bool
 }
 
@@ -879,6 +880,15 @@ func (e *CursorExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		usage := &cursorTokenUsage{}
 		usage.setInputEstimate(len(payload))
 
+		// Flush Anthropic message_start before Cursor Auto's first token so
+		// TeamClaude's 120s headers-timeout does not circuit-open cursor-pro
+		// while the model is still thinking. Empty content is not a text block.
+		// Skip when the request is already gone so cancellation-before-first-chunk
+		// still reaches processFrames.
+		if ctx.Err() == nil {
+			sendChunkSwitchable(`{"role":"assistant","content":""}`, "")
+		}
+
 		emitTextDelta := func(text string, isThinking bool) {
 			// Emit thinking as the standard OpenAI `reasoning_content` delta
 			// field instead of inline <think>...</think> tags. Inline tags
@@ -1486,8 +1496,22 @@ func processH2SessionFrames(
 					if errReply := writeCursorReply(stream, resp); errReply != nil {
 						return errReply
 					}
+				case cursorproto.ServerMsgExecListMcpResources:
+					resp := cursorproto.EncodeExecListMcpResourcesEmpty(msg.ExecMsgId, msg.ExecId)
+					if errReply := writeCursorReply(stream, resp); errReply != nil {
+						return errReply
+					}
+				case cursorproto.ServerMsgExecReadMcpResource:
+					resp := cursorproto.EncodeExecReadMcpResourceError(msg.ExecMsgId, msg.ExecId, "proxy does not expose MCP resources")
+					if errReply := writeCursorReply(stream, resp); errReply != nil {
+						return errReply
+					}
 				case cursorproto.ServerMsgExecOther:
-					return fmt.Errorf("cursor: unsupported exec protocol field %d", msg.ExecFieldNumber)
+					log.Warnf("cursor: unknown exec protocol field %d (replying empty) execId=%s", msg.ExecFieldNumber, msg.ExecId)
+					resp := cursorproto.EncodeExecUnknownEmpty(msg.ExecMsgId, msg.ExecId, msg.ExecFieldNumber)
+					if errReply := writeCursorReply(stream, resp); errReply != nil {
+						return errReply
+					}
 
 				case cursorproto.ServerMsgExecMcpArgs:
 					if onMcpExec != nil {
@@ -1511,71 +1535,10 @@ func processH2SessionFrames(
 							return nil
 						}
 
-						// Inline mode: wait for tool result while handling KV/heartbeat
-						log.Debugf("cursor: waiting for tool result on channel (inline mode)...")
-						var toolResults []toolResultInfo
-					waitLoop:
-						for {
-							select {
-							case <-ctx.Done():
-								return ctx.Err()
-							case results, ok := <-toolResultCh:
-								if !ok {
-									return nil
-								}
-								toolResults = results
-								break waitLoop
-							case waitData, ok := <-stream.Data():
-								if !ok {
-									return stream.Err()
-								}
-								buf.Write(waitData)
-								for {
-									cb := buf.Bytes()
-									if len(cb) == 0 {
-										break
-									}
-									wf, wp, wc, wok := cursorproto.ParseConnectFrame(cb)
-									if !wok {
-										break
-									}
-									buf.Next(wc)
-									if wf&cursorproto.ConnectEndStreamFlag != 0 {
-										continue
-									}
-									wmsg, werr := cursorproto.DecodeAgentServerMessage(wp)
-									if werr != nil {
-										continue
-									}
-									switch wmsg.Type {
-									case cursorproto.ServerMsgKvGetBlob:
-										blobKey := cursorproto.BlobIdHex(wmsg.BlobId)
-										d := blobStore[blobKey]
-										if errReply := writeCursorReply(stream, cursorproto.EncodeKvGetBlobResult(wmsg.KvId, d)); errReply != nil {
-											return errReply
-										}
-									case cursorproto.ServerMsgKvSetBlob:
-										blobKey := cursorproto.BlobIdHex(wmsg.BlobId)
-										blobStore[blobKey] = append([]byte(nil), wmsg.BlobData...)
-										if errReply := writeCursorReply(stream, cursorproto.EncodeKvSetBlobResult(wmsg.KvId)); errReply != nil {
-											return errReply
-										}
-									case cursorproto.ServerMsgExecRequestCtx:
-										if errReply := writeCursorReply(stream, cursorproto.EncodeExecRequestContextResult(wmsg.ExecMsgId, wmsg.ExecId, mcpTools)); errReply != nil {
-											return errReply
-										}
-									case cursorproto.ServerMsgCheckpoint:
-										if onCheckpoint != nil && len(wmsg.CheckpointData) > 0 {
-											onCheckpoint(wmsg.CheckpointData)
-										}
-									}
-								}
-							case <-stream.Done():
-								return stream.Err()
-							}
+						toolResults, waitErr := waitForCursorToolResults(ctx, stream, &buf, blobStore, mcpTools, onCheckpoint, toolResultCh)
+						if waitErr != nil {
+							return waitErr
 						}
-
-						// Send MCP result
 						for _, tr := range toolResults {
 							if tr.ToolCallId == pending.ToolCallId {
 								log.Debugf("cursor: sending inline MCP result for tool=%s", pending.ToolName)
@@ -1590,36 +1553,71 @@ func processH2SessionFrames(
 					}
 
 				case cursorproto.ServerMsgExecReadArgs:
-					if emitNativeClientTool(onMcpExec, msg) {
+					handled, endStream, errNative := parkNativeClientExec(ctx, stream, &buf, blobStore, mcpTools, onCheckpoint, onMcpExec, toolResultCh, msg)
+					if errNative != nil {
+						return errNative
+					}
+					if endStream {
 						return nil
+					}
+					if handled {
+						continue
 					}
 					if errReply := writeCursorReply(stream, cursorproto.EncodeExecReadRejected(msg.ExecMsgId, msg.ExecId, msg.Path, rejectReason)); errReply != nil {
 						return errReply
 					}
 				case cursorproto.ServerMsgExecWriteArgs:
-					if emitNativeClientTool(onMcpExec, msg) {
+					handled, endStream, errNative := parkNativeClientExec(ctx, stream, &buf, blobStore, mcpTools, onCheckpoint, onMcpExec, toolResultCh, msg)
+					if errNative != nil {
+						return errNative
+					}
+					if endStream {
 						return nil
+					}
+					if handled {
+						continue
 					}
 					if errReply := writeCursorReply(stream, cursorproto.EncodeExecWriteRejected(msg.ExecMsgId, msg.ExecId, msg.Path, rejectReason)); errReply != nil {
 						return errReply
 					}
 				case cursorproto.ServerMsgExecDeleteArgs:
-					if emitNativeClientTool(onMcpExec, msg) {
+					handled, endStream, errNative := parkNativeClientExec(ctx, stream, &buf, blobStore, mcpTools, onCheckpoint, onMcpExec, toolResultCh, msg)
+					if errNative != nil {
+						return errNative
+					}
+					if endStream {
 						return nil
+					}
+					if handled {
+						continue
 					}
 					if errReply := writeCursorReply(stream, cursorproto.EncodeExecDeleteRejected(msg.ExecMsgId, msg.ExecId, msg.Path, rejectReason)); errReply != nil {
 						return errReply
 					}
 				case cursorproto.ServerMsgExecLsArgs:
-					if emitNativeClientTool(onMcpExec, msg) {
+					handled, endStream, errNative := parkNativeClientExec(ctx, stream, &buf, blobStore, mcpTools, onCheckpoint, onMcpExec, toolResultCh, msg)
+					if errNative != nil {
+						return errNative
+					}
+					if endStream {
 						return nil
+					}
+					if handled {
+						continue
 					}
 					if errReply := writeCursorReply(stream, cursorproto.EncodeExecLsRejected(msg.ExecMsgId, msg.ExecId, msg.Path, rejectReason)); errReply != nil {
 						return errReply
 					}
 				case cursorproto.ServerMsgExecGrepArgs:
-					if emitNativeClientTool(onMcpExec, msg) {
+					handled, endStream, errNative := parkNativeClientExec(ctx, stream, &buf, blobStore, mcpTools, onCheckpoint, onMcpExec, toolResultCh, msg)
+					if errNative != nil {
+						return errNative
+					}
+					if endStream {
 						return nil
+					}
+					if handled {
+						continue
 					}
 					if errReply := writeCursorReply(stream, cursorproto.EncodeExecGrepError(msg.ExecMsgId, msg.ExecId, rejectReason)); errReply != nil {
 						return errReply
@@ -1639,15 +1637,26 @@ func processH2SessionFrames(
 							"description": "Run shell command",
 						})
 						log.Debugf("cursor: forwarding shell to client tool Bash execId=%s", msg.ExecId)
-						onMcpExec(pendingMcpExec{
+						pending := pendingMcpExec{
 							ExecMsgId:  msg.ExecMsgId,
 							ExecId:     msg.ExecId,
 							ToolCallId: toolCallId,
 							ToolName:   "Bash",
 							Args:       string(args),
-							SkipResume: true,
-						})
-						return nil
+							SkipResume: toolResultCh == nil,
+						}
+						onMcpExec(pending)
+						if toolResultCh == nil {
+							return nil
+						}
+						results, waitErr := waitForCursorToolResults(ctx, stream, &buf, blobStore, mcpTools, onCheckpoint, toolResultCh)
+						if waitErr != nil {
+							return waitErr
+						}
+						if errReply := writeCursorReply(stream, encodeNativeExecResult(pending, msg, contentForToolCall(pending.ToolCallId, results))); errReply != nil {
+							return errReply
+						}
+						continue
 					}
 					if errReply := writeCursorReply(stream, cursorproto.EncodeExecShellRejected(msg.ExecMsgId, msg.ExecId, msg.Command, msg.WorkingDirectory, rejectReason)); errReply != nil {
 						return errReply
@@ -1657,8 +1666,15 @@ func processH2SessionFrames(
 						return errReply
 					}
 				case cursorproto.ServerMsgExecFetchArgs:
-					if emitNativeClientTool(onMcpExec, msg) {
+					handled, endStream, errNative := parkNativeClientExec(ctx, stream, &buf, blobStore, mcpTools, onCheckpoint, onMcpExec, toolResultCh, msg)
+					if errNative != nil {
+						return errNative
+					}
+					if endStream {
 						return nil
+					}
+					if handled {
+						continue
 					}
 					if errReply := writeCursorReply(stream, cursorproto.EncodeExecFetchError(msg.ExecMsgId, msg.ExecId, msg.Url, rejectReason)); errReply != nil {
 						return errReply
@@ -2078,29 +2094,210 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'"
 }
 
-// emitNativeClientTool hands a Cursor built-in file or search call to the
-// client and ends this stream. The parked H2 session never sees the result.
-func emitNativeClientTool(onMcpExec func(pendingMcpExec), msg *cursorproto.DecodedServerMessage) bool {
-	if onMcpExec == nil || msg == nil {
-		return false
+const nativeExecResultMaxBytes = 64 * 1024
+
+func waitForCursorToolResults(
+	ctx context.Context,
+	stream cursorStream,
+	buf *bytes.Buffer,
+	blobStore map[string][]byte,
+	mcpTools []cursorproto.McpToolDef,
+	onCheckpoint func([]byte),
+	toolResultCh <-chan []toolResultInfo,
+) ([]toolResultInfo, error) {
+	log.Debugf("cursor: waiting for tool result on channel (inline mode)...")
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case results, ok := <-toolResultCh:
+			if !ok {
+				return nil, nil
+			}
+			return results, nil
+		case waitData, ok := <-stream.Data():
+			if !ok {
+				return nil, stream.Err()
+			}
+			buf.Write(waitData)
+			for {
+				cb := buf.Bytes()
+				if len(cb) == 0 {
+					break
+				}
+				wf, wp, wc, wok := cursorproto.ParseConnectFrame(cb)
+				if !wok {
+					break
+				}
+				buf.Next(wc)
+				if wf&cursorproto.ConnectEndStreamFlag != 0 {
+					continue
+				}
+				wmsg, werr := cursorproto.DecodeAgentServerMessage(wp)
+				if werr != nil {
+					continue
+				}
+				switch wmsg.Type {
+				case cursorproto.ServerMsgKvGetBlob:
+					blobKey := cursorproto.BlobIdHex(wmsg.BlobId)
+					d := blobStore[blobKey]
+					if errReply := writeCursorReply(stream, cursorproto.EncodeKvGetBlobResult(wmsg.KvId, d)); errReply != nil {
+						return nil, errReply
+					}
+				case cursorproto.ServerMsgKvSetBlob:
+					blobKey := cursorproto.BlobIdHex(wmsg.BlobId)
+					blobStore[blobKey] = append([]byte(nil), wmsg.BlobData...)
+					if errReply := writeCursorReply(stream, cursorproto.EncodeKvSetBlobResult(wmsg.KvId)); errReply != nil {
+						return nil, errReply
+					}
+				case cursorproto.ServerMsgExecRequestCtx:
+					if errReply := writeCursorReply(stream, cursorproto.EncodeExecRequestContextResult(wmsg.ExecMsgId, wmsg.ExecId, mcpTools)); errReply != nil {
+						return nil, errReply
+					}
+				case cursorproto.ServerMsgCheckpoint:
+					if onCheckpoint != nil && len(wmsg.CheckpointData) > 0 {
+						onCheckpoint(wmsg.CheckpointData)
+					}
+				}
+			}
+		case <-stream.Done():
+			return nil, stream.Err()
+		}
+	}
+}
+
+func nativePending(msg *cursorproto.DecodedServerMessage) (pendingMcpExec, bool) {
+	if msg == nil {
+		return pendingMcpExec{}, false
 	}
 	name, args, ok := nativeClientTool(msg)
 	if !ok {
-		return false
+		return pendingMcpExec{}, false
 	}
 	toolCallId := normalizeToolCallID(msg.ExecId)
 	if toolCallId == "" {
 		toolCallId = uuid.New().String()
 	}
-	log.Debugf("cursor: forwarding native tool %s execId=%s", name, msg.ExecId)
-	onMcpExec(pendingMcpExec{
+	return pendingMcpExec{
 		ExecMsgId:  msg.ExecMsgId,
 		ExecId:     msg.ExecId,
 		ToolCallId: toolCallId,
 		ToolName:   name,
 		Args:       args,
-		SkipResume: true,
-	})
+	}, true
+}
+
+// parkNativeClientExec forwards a Cursor built-in exec to Claude Code. OpenAI
+// clients still end the H2 stream (SkipResume). Claude Code parks the session
+// and the next POST injects the tool_result as a Cursor exec success so Auto
+// does not cold-start the same Grep/Read forever.
+func parkNativeClientExec(
+	ctx context.Context,
+	stream cursorStream,
+	buf *bytes.Buffer,
+	blobStore map[string][]byte,
+	mcpTools []cursorproto.McpToolDef,
+	onCheckpoint func([]byte),
+	onMcpExec func(pendingMcpExec),
+	toolResultCh <-chan []toolResultInfo,
+	msg *cursorproto.DecodedServerMessage,
+) (handled bool, endStream bool, err error) {
+	if onMcpExec == nil {
+		return false, false, nil
+	}
+	pending, ok := nativePending(msg)
+	if !ok {
+		return false, false, nil
+	}
+	pending.SkipResume = toolResultCh == nil
+	log.Debugf("cursor: forwarding native tool %s execId=%s skipResume=%v", pending.ToolName, pending.ExecId, pending.SkipResume)
+	onMcpExec(pending)
+	if toolResultCh == nil {
+		return true, true, nil
+	}
+	results, waitErr := waitForCursorToolResults(ctx, stream, buf, blobStore, mcpTools, onCheckpoint, toolResultCh)
+	if waitErr != nil {
+		return true, false, waitErr
+	}
+	if errReply := writeCursorReply(stream, encodeNativeExecResult(pending, msg, contentForToolCall(pending.ToolCallId, results))); errReply != nil {
+		return true, false, errReply
+	}
+	return true, false, nil
+}
+
+func contentForToolCall(toolCallID string, results []toolResultInfo) string {
+	for _, tr := range results {
+		if tr.ToolCallId == toolCallID {
+			return truncateNativeExecContent(tr.Content)
+		}
+	}
+	if len(results) == 1 {
+		return truncateNativeExecContent(results[0].Content)
+	}
+	return ""
+}
+
+func truncateNativeExecContent(s string) string {
+	if len(s) <= nativeExecResultMaxBytes {
+		return s
+	}
+	return s[:nativeExecResultMaxBytes] + "\n...[truncated]"
+}
+
+func encodeNativeExecResult(exec pendingMcpExec, msg *cursorproto.DecodedServerMessage, content string) []byte {
+	path := gjson.Get(exec.Args, "file_path").String()
+	if path == "" {
+		path = gjson.Get(exec.Args, "path").String()
+	}
+	if path == "" && msg != nil {
+		path = msg.Path
+	}
+	switch exec.ToolName {
+	case "Read":
+		return cursorproto.EncodeExecReadSuccess(exec.ExecMsgId, exec.ExecId, path, content)
+	case "Write":
+		return cursorproto.EncodeExecWriteSuccess(exec.ExecMsgId, exec.ExecId, path)
+	case "Grep":
+		pattern := gjson.Get(exec.Args, "pattern").String()
+		if pattern == "" && msg != nil {
+			pattern = msg.Pattern
+		}
+		return cursorproto.EncodeExecGrepSuccess(exec.ExecMsgId, exec.ExecId, pattern, path, content)
+	case "Glob":
+		return cursorproto.EncodeExecLsSuccess(exec.ExecMsgId, exec.ExecId, path, content)
+	case "WebFetch":
+		url := gjson.Get(exec.Args, "url").String()
+		if url == "" && msg != nil {
+			url = msg.Url
+		}
+		return cursorproto.EncodeExecFetchSuccess(exec.ExecMsgId, exec.ExecId, url, content)
+	case "Bash":
+		command := gjson.Get(exec.Args, "command").String()
+		workDir := ""
+		if msg != nil {
+			if command == "" {
+				command = msg.Command
+			}
+			workDir = msg.WorkingDirectory
+		}
+		return cursorproto.EncodeExecShellSuccess(exec.ExecMsgId, exec.ExecId, command, workDir, content)
+	default:
+		return cursorproto.EncodeExecMcpResult(exec.ExecMsgId, exec.ExecId, content, false)
+	}
+}
+
+// emitNativeClientTool hands a Cursor built-in file or search call to the
+// client. SkipResume is left false; callers that cannot park H2 set it.
+func emitNativeClientTool(onMcpExec func(pendingMcpExec), msg *cursorproto.DecodedServerMessage) bool {
+	if onMcpExec == nil {
+		return false
+	}
+	pending, ok := nativePending(msg)
+	if !ok {
+		return false
+	}
+	log.Debugf("cursor: forwarding native tool %s execId=%s", pending.ToolName, pending.ExecId)
+	onMcpExec(pending)
 	return true
 }
 

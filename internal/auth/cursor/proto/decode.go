@@ -37,6 +37,8 @@ const (
 	ServerMsgTokenDelta                            // Token usage delta
 	ServerMsgCheckpoint                            // Conversation checkpoint update
 	ServerMsgExecMcpState                          // Server requests registered MCP state
+	ServerMsgExecListMcpResources                  // Server asks for MCP resource catalog
+	ServerMsgExecReadMcpResource                   // Server asks to read one MCP resource
 )
 
 // DecodedServerMessage holds parsed data from an AgentServerMessage.
@@ -99,7 +101,8 @@ func isReplyRequiredType(t ServerMessageType) bool {
 		ServerMsgExecShellArgs, ServerMsgExecReadArgs, ServerMsgExecWriteArgs,
 		ServerMsgExecDeleteArgs, ServerMsgExecLsArgs, ServerMsgExecGrepArgs,
 		ServerMsgExecFetchArgs, ServerMsgExecDiagnostics, ServerMsgExecShellStream,
-		ServerMsgExecBgShellSpawn, ServerMsgExecWriteShellStdin, ServerMsgExecOther:
+		ServerMsgExecBgShellSpawn, ServerMsgExecWriteShellStdin, ServerMsgExecOther,
+		ServerMsgExecListMcpResources, ServerMsgExecReadMcpResource:
 		return true
 	}
 	return false
@@ -408,6 +411,10 @@ func decodeExecServerMessage(data []byte, msg *DecodedServerMessage) {
 			case ESM_BackgroundShellSpawn:
 				msg.Type = ServerMsgExecBgShellSpawn
 				decodeShellArgs(val, msg) // same structure
+			case ESM_ListMcpResourcesExecArgs:
+				msg.Type = ServerMsgExecListMcpResources
+			case ESM_ReadMcpResourceExecArgs:
+				msg.Type = ServerMsgExecReadMcpResource
 			case ESM_WriteShellStdinArgs:
 				msg.Type = ServerMsgExecWriteShellStdin
 			default:

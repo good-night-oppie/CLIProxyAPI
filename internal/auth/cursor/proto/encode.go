@@ -79,6 +79,14 @@ func setBool(msg *dynamicpb.Message, name string, val bool) {
 	msg.Set(field(msg, name), protoreflect.ValueOfBool(val))
 }
 
+func setInt32(msg *dynamicpb.Message, name string, val int32) {
+	fd := field(msg, name)
+	if fd == nil {
+		return
+	}
+	msg.Set(fd, protoreflect.ValueOfInt32(val))
+}
+
 func setMsg(msg *dynamicpb.Message, name string, sub *dynamicpb.Message) {
 	msg.Set(field(msg, name), protoreflect.ValueOfMessage(sub.ProtoReflect()))
 }
@@ -507,6 +515,57 @@ func EncodeExecMcpStateResult(id uint32, execID string, identifiers []string, to
 	return bytesField(nil, ACM_ExecClientMessage, exec)
 }
 
+func encodeExecRawResult(execMsgId uint32, execId string, resultField protowire.Number, result []byte) []byte {
+	bytesField := func(dst []byte, field protowire.Number, value []byte) []byte {
+		dst = protowire.AppendTag(dst, field, protowire.BytesType)
+		return protowire.AppendBytes(dst, value)
+	}
+	exec := protowire.AppendTag(nil, ECM_Id, protowire.VarintType)
+	exec = protowire.AppendVarint(exec, uint64(execMsgId))
+	exec = bytesField(exec, ECM_ExecId, []byte(execId))
+	exec = bytesField(exec, resultField, result)
+	return bytesField(nil, ACM_ExecClientMessage, exec)
+}
+
+// EncodeExecListMcpResourcesEmpty replies to list_mcp_resources_exec_args (field 17)
+// with an empty success catalog. Aborting the H2 stream instead is what Claude Code
+// surfaces as "API Error: Server error mid-response".
+func EncodeExecListMcpResourcesEmpty(execMsgId uint32, execId string) []byte {
+	success := newMsg("ListMcpResourcesSuccess")
+	result := newMsg("ListMcpResourcesExecResult")
+	setMsg(result, "success", success)
+	data, err := proto.Marshal(result)
+	if err != nil {
+		panic("cursor proto marshal: " + err.Error())
+	}
+	return encodeExecRawResult(execMsgId, execId, ECM_ListMcpResourcesExecResult, data)
+}
+
+// EncodeExecReadMcpResourceError replies to read_mcp_resource_exec_args (field 18).
+func EncodeExecReadMcpResourceError(execMsgId uint32, execId, errMsg string) []byte {
+	if errMsg == "" {
+		errMsg = "proxy does not expose MCP resources"
+	}
+	fail := newMsg("ReadMcpResourceError")
+	setStr(fail, "error", errMsg)
+	result := newMsg("ReadMcpResourceExecResult")
+	setMsg(result, "error", fail)
+	data, err := proto.Marshal(result)
+	if err != nil {
+		panic("cursor proto marshal: " + err.Error())
+	}
+	return encodeExecRawResult(execMsgId, execId, ECM_ReadMcpResourceExecResult, data)
+}
+
+// EncodeExecUnknownEmpty acknowledges an unknown ExecServerMessage variant on the
+// same field number so Cursor does not stall or reset the stream.
+func EncodeExecUnknownEmpty(execMsgId uint32, execId string, fieldNumber int) []byte {
+	if fieldNumber <= 0 {
+		fieldNumber = int(ESM_ListMcpResourcesExecArgs)
+	}
+	return encodeExecRawResult(execMsgId, execId, protowire.Number(fieldNumber), nil)
+}
+
 // EncodeExecMcpResult responds with MCP tool result.
 func EncodeExecMcpResult(execMsgId uint32, execId string, content string, isError bool) []byte {
 	textContent := newMsg("McpTextContent")
@@ -592,6 +651,175 @@ func EncodeExecGrepError(execMsgId uint32, execId string, errMsg string) []byte 
 	result := newMsg("GrepResult")
 	setMsg(result, "error", grepErr)
 	return encodeExecClientMsg(execMsgId, execId, "grep_result", result)
+}
+
+// EncodeExecReadSuccess completes a parked Read exec so Cursor Auto continues
+// on the same H2 stream instead of retrying the tool on a cold Connect.
+func EncodeExecReadSuccess(execMsgId uint32, execId, path, content string) []byte {
+	success := newMsg("ReadSuccess")
+	setStr(success, "path", path)
+	setStr(success, "content", content)
+	if n := int32(countLines(content)); n > 0 {
+		setInt32(success, "total_lines", n)
+	}
+	result := newMsg("ReadResult")
+	setMsg(result, "success", success)
+	return encodeExecClientMsg(execMsgId, execId, "read_result", result)
+}
+
+// EncodeExecWriteSuccess acknowledges a parked Write exec.
+func EncodeExecWriteSuccess(execMsgId uint32, execId, path string) []byte {
+	success := newMsg("WriteSuccess")
+	setStr(success, "path", path)
+	result := newMsg("WriteResult")
+	setMsg(result, "success", success)
+	return encodeExecClientMsg(execMsgId, execId, "write_result", result)
+}
+
+// EncodeExecDeleteSuccess acknowledges a parked Delete exec.
+func EncodeExecDeleteSuccess(execMsgId uint32, execId, path string) []byte {
+	success := newMsg("DeleteSuccess")
+	setStr(success, "path", path)
+	setStr(success, "deleted_file", path)
+	result := newMsg("DeleteResult")
+	setMsg(result, "success", success)
+	return encodeExecClientMsg(execMsgId, execId, "delete_result", result)
+}
+
+// EncodeExecShellSuccess returns stdout from a parked Bash/shell exec.
+func EncodeExecShellSuccess(execMsgId uint32, execId, command, workDir, stdout string) []byte {
+	success := newMsg("ShellSuccess")
+	setStr(success, "command", command)
+	setStr(success, "working_directory", workDir)
+	setInt32(success, "exit_code", 0)
+	setStr(success, "stdout", stdout)
+	result := newMsg("ShellResult")
+	setMsg(result, "success", success)
+	return encodeExecClientMsg(execMsgId, execId, "shell_result", result)
+}
+
+// EncodeExecFetchSuccess returns document text from a parked WebFetch exec.
+func EncodeExecFetchSuccess(execMsgId uint32, execId, url, content string) []byte {
+	success := newMsg("FetchSuccess")
+	setStr(success, "url", url)
+	setStr(success, "content", content)
+	setInt32(success, "status_code", 200)
+	result := newMsg("FetchResult")
+	setMsg(result, "success", success)
+	return encodeExecClientMsg(execMsgId, execId, "fetch_result", result)
+}
+
+// EncodeExecGrepSuccess injects Claude Code's grep output as one content match
+// so Cursor Auto can finish the exec on the parked H2 session.
+func EncodeExecGrepSuccess(execMsgId uint32, execId, pattern, path, output string) []byte {
+	match := newMsg("GrepContentMatch")
+	setInt32(match, "line_number", 1)
+	setStr(match, "content", output)
+
+	fileMatch := newMsg("GrepFileMatch")
+	fileName := path
+	if fileName == "" {
+		fileName = "."
+	}
+	setStr(fileMatch, "file", fileName)
+	matchesField := field(fileMatch, "matches")
+	if matchesField != nil {
+		list := fileMatch.Mutable(matchesField).List()
+		list.Append(protoreflect.ValueOfMessage(match.ProtoReflect()))
+	}
+
+	content := newMsg("GrepContentResult")
+	filesField := field(content, "matches")
+	if filesField != nil {
+		list := content.Mutable(filesField).List()
+		list.Append(protoreflect.ValueOfMessage(fileMatch.ProtoReflect()))
+	}
+	setInt32(content, "total_matched_lines", 1)
+
+	union := newMsg("GrepUnionResult")
+	setMsg(union, "content", content)
+
+	success := newMsg("GrepSuccess")
+	setStr(success, "pattern", pattern)
+	setStr(success, "path", path)
+	setStr(success, "output_mode", "content")
+	mapField := field(success, "workspace_results")
+	if mapField != nil && mapField.IsMap() {
+		m := success.Mutable(mapField).Map()
+		m.Set(protoreflect.ValueOfString(fileName).MapKey(), protoreflect.ValueOfMessage(union.ProtoReflect()))
+	}
+
+	result := newMsg("GrepResult")
+	setMsg(result, "success", success)
+	return encodeExecClientMsg(execMsgId, execId, "grep_result", result)
+}
+
+// EncodeExecLsSuccess turns a Glob/ls listing into a shallow directory tree.
+func EncodeExecLsSuccess(execMsgId uint32, execId, path, listing string) []byte {
+	root := newMsg("LsDirectoryTreeNode")
+	abs := path
+	if abs == "" {
+		abs = "."
+	}
+	setStr(root, "abs_path", abs)
+	setBool(root, "children_were_processed", true)
+	filesField := field(root, "children_files")
+	nFiles := int32(0)
+	if filesField != nil {
+		list := root.Mutable(filesField).List()
+		for _, line := range splitListingLines(listing) {
+			f := newMsg("LsDirectoryTreeNode_File")
+			setStr(f, "name", line)
+			list.Append(protoreflect.ValueOfMessage(f.ProtoReflect()))
+			nFiles++
+			if nFiles >= 200 {
+				break
+			}
+		}
+	}
+	setInt32(root, "num_files", nFiles)
+	success := newMsg("LsSuccess")
+	setMsg(success, "directory_tree_root", root)
+	result := newMsg("LsResult")
+	setMsg(result, "success", success)
+	return encodeExecClientMsg(execMsgId, execId, "ls_result", result)
+}
+
+func countLines(s string) int {
+	if s == "" {
+		return 0
+	}
+	n := 1
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\n' {
+			n++
+		}
+	}
+	return n
+}
+
+func splitListingLines(listing string) []string {
+	if listing == "" {
+		return nil
+	}
+	raw := make([]string, 0, 16)
+	start := 0
+	for i := 0; i <= len(listing); i++ {
+		if i == len(listing) || listing[i] == '\n' {
+			line := listing[start:i]
+			start = i + 1
+			for len(line) > 0 && (line[0] == ' ' || line[0] == '\t' || line[0] == '\r') {
+				line = line[1:]
+			}
+			for len(line) > 0 && (line[len(line)-1] == ' ' || line[len(line)-1] == '\t' || line[len(line)-1] == '\r') {
+				line = line[:len(line)-1]
+			}
+			if line != "" {
+				raw = append(raw, line)
+			}
+		}
+	}
+	return raw
 }
 
 func EncodeExecFetchError(execMsgId uint32, execId string, url, errMsg string) []byte {

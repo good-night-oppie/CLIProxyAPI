@@ -43,3 +43,20 @@ func TestNativeClientToolMapsReadWriteGrep(t *testing.T) {
 		t.Fatal("empty grep pattern was forwarded")
 	}
 }
+
+func TestNativePendingKeepsH2ParkedForClaude(t *testing.T) {
+	pending, ok := nativePending(&proto.DecodedServerMessage{
+		Type:     proto.ServerMsgExecGrepArgs,
+		Pattern:  "HELLO",
+		Path:     "/etc",
+		ExecId:   "grep-1",
+		ExecMsgId: 9,
+	})
+	if !ok || pending.SkipResume || pending.ToolName != "Grep" || pending.ExecId != "grep-1" {
+		t.Fatalf("pending = %+v ok=%v", pending, ok)
+	}
+	reply := encodeNativeExecResult(pending, nil, "/etc/hosts:1:HELLO")
+	if len(reply) == 0 {
+		t.Fatal("empty grep success reply")
+	}
+}

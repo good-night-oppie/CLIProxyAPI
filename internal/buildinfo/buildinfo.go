@@ -2,7 +2,7 @@
 package buildinfo
 
 // ReleaseVersion identifies this fork's release independently of upstream.
-const ReleaseVersion = "v7.3.8-oppie.20261019"
+const ReleaseVersion = "v7.3.8-oppie.20261023"
 
 // BackportNote describes selected fixes, not upstream release equivalence.
 const BackportNote = "Selected fixes backported from CLIProxyAPI v8 (through v8.0.35); not a full v8 upgrade."

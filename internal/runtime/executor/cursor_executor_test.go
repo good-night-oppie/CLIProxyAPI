@@ -573,6 +573,64 @@ func TestCursorStreamCoalescerFlushesOnCadence(t *testing.T) {
 	coalescer.close()
 }
 
+func TestCursorNativeGrepClaudeResumeParksSession(t *testing.T) {
+	clientToolCallID := normalizeToolCallID("grep-1")
+	processorResult := make(chan error, 1)
+	e := newCursorExecutorHarness(func(ctx context.Context, _ cursorStream, _ map[string][]byte, _ anyMCPTools, _ func(string, bool), onMcpExec func(pendingMcpExec), toolResultCh <-chan []toolResultInfo, usage *cursorTokenUsage, _ func([]byte)) error {
+		onMcpExec(pendingMcpExec{
+			ExecMsgId:  1,
+			ExecId:     "grep-1",
+			ToolCallId: clientToolCallID,
+			ToolName:   "Grep",
+			Args:       `{"pattern":"HELLO","path":"/etc"}`,
+		})
+		select {
+		case results := <-toolResultCh:
+			if len(results) != 1 || results[0].ToolCallId != clientToolCallID || results[0].Content != "/etc/hosts:1:HELLO" {
+				err := errors.New("parked native grep did not receive the client tool result")
+				processorResult <- err
+				return err
+			}
+		case <-ctx.Done():
+			processorResult <- ctx.Err()
+			return ctx.Err()
+		}
+		usage.addOutput(3)
+		processorResult <- nil
+		return nil
+	})
+
+	firstPayload := []byte(`{"model":"cursor-test-model","max_tokens":128,"stream":true,"messages":[{"role":"user","content":"find HELLO"}]}`)
+	opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("claude"), OriginalRequest: firstPayload}
+	first, err := e.ExecuteStream(context.Background(), cursorTestAuth(), cliproxyexecutor.Request{Model: "cursor-test-model", Payload: firstPayload}, opts)
+	if err != nil {
+		t.Fatalf("first ExecuteStream() error = %v", err)
+	}
+	firstBody := cursorStreamPayload(collectCursorStream(t, first))
+	if !strings.Contains(firstBody, `"name":"Grep"`) || !strings.Contains(firstBody, `"stop_reason":"tool_use"`) {
+		t.Fatalf("native grep was not forwarded as tool_use:\n%s", firstBody)
+	}
+	e.mu.Lock()
+	publishedSessions := len(e.sessions)
+	e.mu.Unlock()
+	if publishedSessions != 1 {
+		t.Fatalf("native grep closed H2 instead of parking: sessions=%d", publishedSessions)
+	}
+
+	secondPayload := []byte(`{"model":"cursor-test-model","max_tokens":128,"stream":true,"messages":[{"role":"user","content":"find HELLO"},{"role":"assistant","content":[{"type":"tool_use","id":"` + clientToolCallID + `","name":"Grep","input":{"pattern":"HELLO","path":"/etc"}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"` + clientToolCallID + `","content":"/etc/hosts:1:HELLO"}]}]}`)
+	second, err := e.ExecuteStream(context.Background(), cursorTestAuth(), cliproxyexecutor.Request{Model: "cursor-test-model", Payload: secondPayload}, cliproxyexecutor.Options{
+		SourceFormat:    sdktranslator.FromString("claude"),
+		OriginalRequest: secondPayload,
+	})
+	if err != nil {
+		t.Fatalf("resumed ExecuteStream() error = %v", err)
+	}
+	collectCursorStream(t, second)
+	if err := <-processorResult; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestCursorExecuteStreamCancellationBeforeFirstChunkReturns(t *testing.T) {
 	processorExited := make(chan struct{})
 	e := newCursorExecutorHarness(func(ctx context.Context, _ cursorStream, _ map[string][]byte, _ anyMCPTools, _ func(string, bool), _ func(pendingMcpExec), _ <-chan []toolResultInfo, _ *cursorTokenUsage, _ func([]byte)) error {

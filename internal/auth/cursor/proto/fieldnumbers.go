@@ -181,10 +181,14 @@ const (
 	ESM_DiagnosticsArgs      = 9  // DiagnosticsArgs
 	ESM_RequestContextArgs   = 10 // RequestContextArgs
 	ESM_McpArgs              = 11 // McpArgs
-	ESM_ShellStreamArgs      = 14 // ShellArgs (stream variant)
-	ESM_BackgroundShellSpawn = 16 // BackgroundShellSpawnArgs
-	ESM_FetchArgs            = 20 // FetchArgs
-	ESM_WriteShellStdinArgs  = 23 // WriteShellStdinArgs
+	ESM_ShellStreamArgs           = 14 // ShellArgs (stream variant)
+	ESM_BackgroundShellSpawn      = 16 // BackgroundShellSpawnArgs
+	ESM_ListMcpResourcesExecArgs  = 17 // ListMcpResourcesExecArgs
+	ESM_ReadMcpResourceExecArgs   = 18 // ReadMcpResourceExecArgs
+	ESM_FetchArgs                 = 20 // FetchArgs
+	ESM_RecordScreenArgs          = 21 // RecordScreenArgs
+	ESM_ComputerUseArgs           = 22 // ComputerUseArgs
+	ESM_WriteShellStdinArgs       = 23 // WriteShellStdinArgs
 )
 
 // ExecClientMessage
@@ -202,9 +206,13 @@ const (
 	ECM_RequestContextResult    = 10
 	ECM_McpResult               = 11
 	ECM_ShellStream             = 14
-	ECM_BackgroundShellSpawnRes = 16
-	ECM_FetchResult             = 20
-	ECM_WriteShellStdinResult   = 23
+	ECM_BackgroundShellSpawnRes      = 16
+	ECM_ListMcpResourcesExecResult   = 17
+	ECM_ReadMcpResourceExecResult    = 18
+	ECM_FetchResult                  = 20
+	ECM_RecordScreenResult           = 21
+	ECM_ComputerUseResult            = 22
+	ECM_WriteShellStdinResult        = 23
 )
 
 // McpArgs
